@@ -2,7 +2,6 @@
 
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
 import json
 from datetime import datetime
 
@@ -16,9 +15,8 @@ class TechDocScraper:
         self.documents = []
 
     def scrape_markdown_from_github(self, repo_url):
-        """從 GitHub repo 爬取 README 和相關文檔"""
+        """從 GitHub repo 爬取 README"""
         try:
-            # 獲取 README 內容
             readme_url = repo_url.replace('github.com', 'raw.githubusercontent.com').rstrip('/') + '/main/README.md'
             resp = requests.get(readme_url, headers=self.headers, timeout=10)
 
@@ -26,7 +24,7 @@ class TechDocScraper:
                 self.documents.append({
                     'source': repo_url,
                     'type': 'github_markdown',
-                    'content': resp.text,
+                    'content': resp.text[:3000],
                     'title': repo_url.split('/')[-1],
                     'timestamp': datetime.now().isoformat()
                 })
@@ -43,11 +41,10 @@ class TechDocScraper:
             resp.encoding = 'utf-8'
             soup = BeautifulSoup(resp.content, 'html.parser')
 
-            # 移除 script 和 style
             for tag in soup(['script', 'style']):
                 tag.decompose()
 
-            text = soup.get_text(separator='\n', strip=True)
+            text = soup.get_text(separator='\n', strip=True)[:3000]
 
             self.documents.append({
                 'source': url,
@@ -82,25 +79,13 @@ class TechDocScraper:
 
 
 def main():
-    """爬取智慧製造 AI 相關文檔"""
-
     scraper = TechDocScraper()
 
-    # 爬取資源清單
     urls = [
-        # GitHub Awesome 列表
         'https://github.com/M-3LAB/awesome-industrial-anomaly-detection',
         'https://github.com/mala-lab/Awesome-Anomaly-Detection-Foundation-Models',
         'https://github.com/kaushikb11/awesome-llm-agents',
         'https://github.com/zli12321/Vision-Language-Models-Overview',
-
-        # 官方文檔
-        'https://docs.langchain.com/',
-        'https://docs.ultralytics.com/',
-
-        # 其他資源
-        'https://www.langflow.org/',
-        'https://flowiseai.com/',
     ]
 
     print("開始爬取技術文檔...\n")

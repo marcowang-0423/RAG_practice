@@ -2,24 +2,17 @@
 
 import json
 import os
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.schema import Document
-
+import numpy as np
+from sentence_transformers import SentenceTransformer
+import faiss
 
 class DocumentIndexer:
     """文檔索引和向量化"""
 
-    def __init__(self, chunk_size=500, chunk_overlap=100):
+    def __init__(self, chunk_size=500):
         self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            separators=["\n\n", "\n", " ", ""]
-        )
-        self.embeddings = None
+        self.documents = []
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
         self.vectorstore = None
 
     def load_raw_documents(self, filepath='data/raw_documents.json'):
@@ -30,94 +23,81 @@ class DocumentIndexer:
         with open(filepath, 'r', encoding='utf-8') as f:
             raw_docs = json.load(f)
 
-        # 轉換為 LangChain Document 格式
-        documents = []
-        for doc in raw_docs:
-            documents.append(Document(
-                page_content=doc['content'][:5000],  # 限制長度避免超時
-                metadata={
-                    'source': doc['source'],
-                    'type': doc['type'],
-                    'title': doc['title'],
-                    'timestamp': doc['timestamp']
-                }
-            ))
-        return documents
+        self.documents = raw_docs
+        return raw_docs
 
     def split_documents(self, documents):
-        """分塊文檔"""
-        print(f"正在分塊 {len(documents)} 份文檔...")
-        chunks = self.splitter.split_documents(documents)
+        """簡單分塊"""
+        chunks = []
+        for doc in documents:
+            content = doc['content']
+            for i in range(0, len(content), self.chunk_size):
+                chunk = {
+                    'content': content[i:i+self.chunk_size],
+                    'source': doc['source'],
+                    'title': doc['title'],
+                    'type': doc['type']
+                }
+                chunks.append(chunk)
         print(f"✓ 分塊完成：{len(chunks)} 個 chunks")
         return chunks
 
-    def create_vectorstore(self, documents):
+    def create_vectorstore(self, chunks):
         """創建向量庫"""
-        print("正在初始化 OpenAI Embeddings...")
-        self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        print("正在向量化文檔（本地模型）...")
+        texts = [c['content'] for c in chunks]
+        embeddings = self.model.encode(texts, show_progress_bar=True)
 
-        print("正在建立向量庫...")
-        try:
-            self.vectorstore = FAISS.from_documents(
-                documents=documents,
-                embedding=self.embeddings
-            )
-            print(f"✓ 向量庫建立完成：{len(documents)} 個文檔")
-            return self.vectorstore
-        except Exception as e:
-            print(f"✗ 向量庫建立失敗: {e}")
-            raise
+        # 創建 FAISS 索引
+        dimension = embeddings.shape[1]
+        self.vectorstore = faiss.IndexFlatL2(dimension)
+        self.vectorstore.add(embeddings.astype('float32'))
+
+        # 保存元數據
+        self.metadata = chunks
+
+        print(f"✓ 向量庫建立完成：{len(chunks)} 個文檔")
+        return self.vectorstore
 
     def save_vectorstore(self, filepath='vector_store/smart_mfg_index'):
         """保存向量庫"""
         os.makedirs('vector_store', exist_ok=True)
         if self.vectorstore:
-            self.vectorstore.save_local(filepath)
+            faiss.write_index(self.vectorstore, f"{filepath}.faiss")
+            with open(f"{filepath}_metadata.json", 'w', encoding='utf-8') as f:
+                json.dump(self.metadata, f, ensure_ascii=False, indent=2)
             print(f"✓ 向量庫已保存到 {filepath}")
         else:
             print("✗ 尚未建立向量庫")
 
     def load_vectorstore(self, filepath='vector_store/smart_mfg_index'):
-        """載入已保存的向量庫"""
-        if not os.path.exists(filepath):
+        """載入向量庫"""
+        if not os.path.exists(f"{filepath}.faiss"):
             print(f"✗ 找不到向量庫: {filepath}")
             return None
 
         print("正在載入向量庫...")
-        self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-        self.vectorstore = FAISS.load_local(
-            filepath,
-            self.embeddings,
-            allow_dangerous_deserialization=True
-        )
+        self.vectorstore = faiss.read_index(f"{filepath}.faiss")
+        with open(f"{filepath}_metadata.json", 'r', encoding='utf-8') as f:
+            self.metadata = json.load(f)
         print(f"✓ 向量庫載入完成")
         return self.vectorstore
 
     def index_pipeline(self):
         """完整索引流程"""
         try:
-            # 1. 載入原始文檔
             documents = self.load_raw_documents()
-
-            # 2. 分塊
             chunks = self.split_documents(documents)
-
-            # 3. 建立向量庫
             self.create_vectorstore(chunks)
-
-            # 4. 保存
             self.save_vectorstore()
-
             print("\n✅ 索引完成！")
             return self.vectorstore
-
         except Exception as e:
             print(f"✗ 索引失敗: {e}")
             raise
 
 
 def main():
-    """運行索引流程"""
     indexer = DocumentIndexer()
     indexer.index_pipeline()
 
